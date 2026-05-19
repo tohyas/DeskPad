@@ -1,0 +1,113 @@
+name: Build distribution zip
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build-distribution-zip:
+    name: Build DeskPad distribution zip
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      - name: Extract distribution version
+        id: version
+        shell: bash
+        run: |
+          RAW_VERSION=$(grep -E 'versionName[[:space:]]*=' app/build.gradle.kts | head -n 1 | sed -E 's/.*versionName[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/' || true)
+
+          if [ -z "$RAW_VERSION" ]; then
+            RAW_VERSION="0.1.0"
+          fi
+
+          # Distribution filenames should not include beta even if versionName does.
+          VERSION=$(printf '%s' "$RAW_VERSION" | sed -E 's/[-._]?beta([.-]?[0-9A-Za-z]+)?$//I')
+
+          if [ -z "$VERSION" ]; then
+            VERSION="0.1.0"
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "raw_version=$RAW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "DeskPad versionName: $RAW_VERSION"
+          echo "DeskPad distribution version: $VERSION"
+
+      - name: Build debug APK
+        run: ./gradlew assembleDebug
+
+      # Future note:
+      # If release signing secrets are added later, switch this workflow to assembleRelease
+      # and copy app/build/outputs/apk/release/app-release.apk instead.
+      - name: Prepare distribution files
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          APK_SOURCE="app/build/outputs/apk/debug/app-debug.apk"
+          APK_NAME="DeskPad_v${VERSION}.apk"
+
+          mkdir -p dist
+          cp "$APK_SOURCE" "dist/$APK_NAME"
+
+          cat > "dist/README_最初に読んでください.txt" <<EOF
+          DeskPad v${VERSION}
+
+          このzipには、DeskPadのAndroid APKが入っています。
+
+          必要環境：
+          - Android 14以上
+          - arm64-v8a端末
+          - Shizuku
+          - Accessibility Serviceの有効化
+          - 外部モニター、XRグラス、モバイルモニターなど
+          - デスクトップモード、拡張ディスプレイ、外部ディスプレイ利用に対応したAndroid環境
+
+          インストール手順：
+          1. zipファイルを解凍する
+          2. DeskPad_v${VERSION}.apk をAndroid端末に移す
+          3. APKを開いてインストールする
+          4. Shizukuを起動する
+          5. DeskPadを開き、Shizuku権限を許可する
+          6. Androidのユーザー補助設定で DeskPad Controller を有効化する
+          7. 外部ディスプレイを接続してDeskPadを使う
+
+          注意：
+          - DeskPadはAndroidの外部ディスプレイ環境で使うためのアプリです。
+          - 端末、Androidビルド、外部ディスプレイ、接続方法によって動作が変わる場合があります。
+          - すべてのアプリでクリックや文字入力が同じように動くとは限りません。
+          - 詳しい手順はnote本文を参照してください。
+          EOF
+
+          sed -i 's/^          //' "dist/README_最初に読んでください.txt"
+
+      - name: Create zip
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          mkdir -p dist_zip
+          cd dist
+          zip -r "../dist_zip/DeskPad_v${VERSION}.zip" .
+
+      - name: Upload distribution zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeskPad_v${{ steps.version.outputs.version }}
+          path: dist_zip/DeskPad_v${{ steps.version.outputs.version }}.zip
+          if-no-files-found: error
